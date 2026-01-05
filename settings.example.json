@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-notify notification"
+            "command": "/home/YOUR_USERNAME/.local/bin/claude-notify notification"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-notify stop"
+            "command": "/home/YOUR_USERNAME/.local/bin/claude-notify stop"
           }
         ]
       }
