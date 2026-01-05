@@ -42,6 +42,45 @@ get_project_name() {
     basename "${PWD}"
 }
 
+# Read hook input from stdin (Claude Code passes JSON)
+read_hook_input() {
+    HOOK_INPUT=""
+    HOOK_SESSION_ID=""
+    HOOK_MESSAGE=""
+    HOOK_TRANSCRIPT=""
+    HOOK_TASK_SUMMARY=""
+
+    # Read stdin if available (non-blocking check)
+    if read -t 0.1 -r line; then
+        HOOK_INPUT="$line"
+        # Read remaining lines if any
+        while read -t 0.1 -r more; do
+            HOOK_INPUT="${HOOK_INPUT}${more}"
+        done
+
+        # Parse JSON fields using jq
+        if command -v jq &>/dev/null && [[ -n "$HOOK_INPUT" ]]; then
+            HOOK_SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+            HOOK_MESSAGE=$(echo "$HOOK_INPUT" | jq -r '.message // empty' 2>/dev/null)
+            HOOK_TRANSCRIPT=$(echo "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
+
+            # Try to get task summary from transcript (first user message)
+            if [[ -n "$HOOK_TRANSCRIPT" ]] && [[ -f "$HOOK_TRANSCRIPT" ]]; then
+                # Get the first user message as task summary (truncate to 80 chars)
+                HOOK_TASK_SUMMARY=$(grep -m1 '"type":"human"' "$HOOK_TRANSCRIPT" 2>/dev/null | \
+                    jq -r '.message.content // empty' 2>/dev/null | \
+                    head -c 80 | tr '\n' ' ')
+                # If empty, try alternative format
+                if [[ -z "$HOOK_TASK_SUMMARY" ]]; then
+                    HOOK_TASK_SUMMARY=$(head -5 "$HOOK_TRANSCRIPT" 2>/dev/null | \
+                        jq -r 'select(.type=="human") | .message.content // empty' 2>/dev/null | \
+                        head -c 80 | tr '\n' ' ')
+                fi
+            fi
+        fi
+    fi
+}
+
 # Send Telegram notification
 send_telegram() {
     local message="$1"
@@ -179,16 +218,48 @@ format_message() {
             ;;
     esac
 
-    echo "${emoji} *Claude Code - ${title}*
+    # Build message
+    local msg="${emoji} *Claude Code - ${title}*
 
 📁 Project: \`${project}\`
-🖥️ Host: \`${hostname}\`
+🖥️ Host: \`${hostname}\`"
+
+    # Add session ID (short version) if available
+    if [[ -n "$HOOK_SESSION_ID" ]]; then
+        local short_id="${HOOK_SESSION_ID:0:8}"
+        msg="${msg}
+🆔 Session: \`${short_id}\`"
+    fi
+
+    # Add task summary if available
+    if [[ -n "$HOOK_TASK_SUMMARY" ]]; then
+        # Escape special markdown characters
+        local safe_summary
+        safe_summary=$(echo "$HOOK_TASK_SUMMARY" | sed 's/[`*_]/\\&/g')
+        msg="${msg}
+📝 Task: ${safe_summary}..."
+    fi
+
+    # Add notification message if available (for notification events)
+    if [[ -n "$HOOK_MESSAGE" ]] && [[ "$event_type" == "notification" ]]; then
+        local safe_msg
+        safe_msg=$(echo "$HOOK_MESSAGE" | sed 's/[`*_]/\\&/g')
+        msg="${msg}
+💬 ${safe_msg}"
+    fi
+
+    msg="${msg}
 ⏰ Time: $(date '+%Y-%m-%d %H:%M:%S')"
+
+    echo "$msg"
 }
 
 # Main function
 main() {
     local event_type="${1:-notification}"
+
+    # Read hook input from Claude Code (via stdin)
+    read_hook_input
 
     load_config
 
