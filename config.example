@@ -1,0 +1,16 @@
+# Claude Code Notification Configuration
+# Copy this file to ~/.config/claude-notify/config
+
+# Notification channel: telegram, slack, or webhook
+NOTIFY_CHANNEL="telegram"
+
+# Telegram Configuration
+# Get token from @BotFather, chat ID from getUpdates API
+TELEGRAM_BOT_TOKEN="your-bot-token-here"
+TELEGRAM_CHAT_ID="your-chat-id-here"
+
+# Slack Configuration (alternative)
+# SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
+
+# Custom Webhook Configuration (alternative)
+# WEBHOOK_URL="https://your-webhook-endpoint.com/notify"
