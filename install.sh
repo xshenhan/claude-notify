@@ -3,15 +3,24 @@
 # Claude Code Notification Tool - Installer
 # Interactively configures notification settings and Claude Code hooks
 #
+# Usage:
+#   ./install.sh              # Full install with global hooks
+#   ./install.sh --local      # Configure hooks for current project only
+#   ./install.sh --hooks-only # Only configure hooks (skip script install)
+#   ./install.sh --uninstall  # Remove claude-notify
+#
 
 set -euo pipefail
 
 # Configuration paths
 CONFIG_DIR="${HOME}/.config/claude-notify"
 CONFIG_FILE="${CONFIG_DIR}/config"
-CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
 INSTALL_DIR="${HOME}/.local/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Options
+LOCAL_MODE=false
+HOOKS_ONLY=false
 
 # Colors
 RED='\033[0;31m'
@@ -44,6 +53,15 @@ print_error() {
 
 print_warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+# Get settings file path based on mode
+get_settings_path() {
+    if [[ "$LOCAL_MODE" == true ]]; then
+        echo "${PWD}/.claude/settings.local.json"
+    else
+        echo "${HOME}/.claude/settings.json"
+    fi
 }
 
 # Check dependencies
@@ -201,98 +219,88 @@ install_script() {
     fi
 }
 
-# Configure Claude Code hooks
+# Configure Claude Code hooks (with merge support)
 configure_hooks() {
-    print_step "Configuring Claude Code hooks..."
+    local settings_path
+    settings_path=$(get_settings_path)
+    local settings_dir
+    settings_dir=$(dirname "$settings_path")
+
+    if [[ "$LOCAL_MODE" == true ]]; then
+        print_step "Configuring project-level hooks..."
+        echo -e "  ${CYAN}Target: ${settings_path}${NC}"
+    else
+        print_step "Configuring global hooks..."
+        echo -e "  ${CYAN}Target: ${settings_path}${NC}"
+    fi
 
     local notify_path="$INSTALL_DIR/claude-notify"
 
-    # Create Claude settings directory if needed
-    mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
+    # Create directory if needed
+    mkdir -p "$settings_dir"
 
-    # Check if settings.json exists
-    if [[ -f "$CLAUDE_SETTINGS" ]]; then
+    # Define the new hooks to add
+    local notification_hook
+    notification_hook=$(jq -n --arg cmd "$notify_path notification" '{
+        "matcher": "",
+        "hooks": [{"type": "command", "command": $cmd}]
+    }')
+
+    local stop_hook
+    stop_hook=$(jq -n --arg cmd "$notify_path stop" '{
+        "matcher": "",
+        "hooks": [{"type": "command", "command": $cmd}]
+    }')
+
+    if [[ -f "$settings_path" ]]; then
         # Backup existing settings
-        cp "$CLAUDE_SETTINGS" "${CLAUDE_SETTINGS}.backup.$(date +%Y%m%d%H%M%S)"
+        cp "$settings_path" "${settings_path}.backup.$(date +%Y%m%d%H%M%S)"
         print_success "Backed up existing settings"
 
         # Read existing settings
         local existing
-        existing=$(cat "$CLAUDE_SETTINGS")
+        existing=$(cat "$settings_path")
 
-        # Check if hooks already exist
+        # Show existing hooks
         if echo "$existing" | jq -e '.hooks' &>/dev/null; then
-            print_warning "Hooks already configured in settings.json"
-            read -rp "Overwrite hooks configuration? [y/N]: " overwrite
-            if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
-                echo "Skipping hooks configuration"
-                return
-            fi
+            echo ""
+            echo -e "${CYAN}Existing hooks:${NC}"
+            echo "$existing" | jq '.hooks'
+            echo ""
         fi
 
-        # Merge hooks into existing settings
+        # Merge hooks (append to existing arrays)
         local new_settings
-        new_settings=$(echo "$existing" | jq --arg path "$notify_path" '
-            .hooks = {
-                "Notification": [
-                    {
-                        "matcher": "",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": ($path + " notification")
-                            }
-                        ]
-                    }
-                ],
-                "Stop": [
-                    {
-                        "matcher": "",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": ($path + " stop")
-                            }
-                        ]
-                    }
-                ]
-            }
+        new_settings=$(echo "$existing" | jq \
+            --argjson notif "$notification_hook" \
+            --argjson stop "$stop_hook" '
+            # Initialize hooks object if not exists
+            .hooks //= {}
+            # Append to Notification array (or create it)
+            | .hooks.Notification = (.hooks.Notification // []) + [$notif]
+            # Append to Stop array (or create it)
+            | .hooks.Stop = (.hooks.Stop // []) + [$stop]
         ')
 
-        echo "$new_settings" > "$CLAUDE_SETTINGS"
+        echo "$new_settings" > "$settings_path"
+        print_success "Hooks merged into existing configuration"
     else
         # Create new settings file
-        jq -n --arg path "$notify_path" '
-            {
-                "hooks": {
-                    "Notification": [
-                        {
-                            "matcher": "",
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": ($path + " notification")
-                                }
-                            ]
-                        }
-                    ],
-                    "Stop": [
-                        {
-                            "matcher": "",
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": ($path + " stop")
-                                }
-                            ]
-                        }
-                    ]
-                }
+        jq -n \
+            --argjson notif "$notification_hook" \
+            --argjson stop "$stop_hook" '{
+            "hooks": {
+                "Notification": [$notif],
+                "Stop": [$stop]
             }
-        ' > "$CLAUDE_SETTINGS"
+        }' > "$settings_path"
+        print_success "Created new settings file with hooks"
     fi
 
-    print_success "Claude Code hooks configured"
+    # Show final hooks config
+    echo ""
+    echo -e "${CYAN}Final hooks configuration:${NC}"
+    jq '.hooks' "$settings_path"
 }
 
 # Test notification
@@ -308,35 +316,100 @@ test_notification() {
     fi
 }
 
+# Show usage
+show_usage() {
+    echo "Usage: $(basename "$0") [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --local       Configure hooks for current project only"
+    echo "                (creates .claude/settings.local.json in current directory)"
+    echo "  --hooks-only  Only configure hooks (skip script and config installation)"
+    echo "  --uninstall   Remove claude-notify"
+    echo "  -h, --help    Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  ./install.sh              # Full install with global hooks"
+    echo "  ./install.sh --local      # Project-level hooks only"
+    echo "  ./install.sh --hooks-only --local  # Just add hooks to current project"
+}
+
+# Handle uninstall
+do_uninstall() {
+    echo "Uninstalling claude-notify..."
+
+    rm -f "$INSTALL_DIR/claude-notify"
+    rm -rf "$CONFIG_DIR"
+
+    local settings_path
+    settings_path=$(get_settings_path)
+
+    if [[ -f "$settings_path" ]]; then
+        print_warning "Hooks in $settings_path were not removed"
+        echo "Please manually remove the Notification and Stop hooks if needed"
+    fi
+
+    print_success "Uninstalled successfully"
+}
+
 # Main installation flow
 main() {
     print_banner
 
+    if [[ "$LOCAL_MODE" == true ]]; then
+        echo -e "${YELLOW}Local mode: hooks will be added to current project only${NC}"
+        echo -e "Project: ${CYAN}${PWD}${NC}"
+    fi
+
     check_dependencies
-    select_channel
 
-    case "$NOTIFY_CHANNEL" in
-        telegram) configure_telegram ;;
-        slack)    configure_slack ;;
-        webhook)  configure_webhook ;;
-    esac
+    if [[ "$HOOKS_ONLY" == false ]]; then
+        # Check if already configured
+        if [[ -f "$CONFIG_FILE" ]]; then
+            print_warning "Configuration already exists at $CONFIG_FILE"
+            read -rp "Reconfigure notification settings? [y/N]: " reconfig
+            if [[ "$reconfig" =~ ^[Yy]$ ]]; then
+                select_channel
+                case "$NOTIFY_CHANNEL" in
+                    telegram) configure_telegram ;;
+                    slack)    configure_slack ;;
+                    webhook)  configure_webhook ;;
+                esac
+                save_config
+            fi
+        else
+            select_channel
+            case "$NOTIFY_CHANNEL" in
+                telegram) configure_telegram ;;
+                slack)    configure_slack ;;
+                webhook)  configure_webhook ;;
+            esac
+            save_config
+        fi
 
-    save_config
-    install_script
+        install_script
+    fi
+
     configure_hooks
 
-    echo ""
-    read -rp "Send a test notification? [Y/n]: " send_test
-    if [[ ! "$send_test" =~ ^[Nn]$ ]]; then
-        test_notification
+    if [[ "$HOOKS_ONLY" == false ]]; then
+        echo ""
+        read -rp "Send a test notification? [Y/n]: " send_test
+        if [[ ! "$send_test" =~ ^[Nn]$ ]]; then
+            test_notification
+        fi
     fi
+
+    local settings_path
+    settings_path=$(get_settings_path)
 
     echo ""
     echo -e "${GREEN}${BOLD}Installation complete!${NC}"
     echo ""
-    echo "Configuration: $CONFIG_FILE"
-    echo "Script:        $INSTALL_DIR/claude-notify"
-    echo "Claude hooks:  $CLAUDE_SETTINGS"
+    if [[ "$HOOKS_ONLY" == false ]]; then
+        echo "Configuration: $CONFIG_FILE"
+        echo "Script:        $INSTALL_DIR/claude-notify"
+    fi
+    echo "Claude hooks:  $settings_path"
     echo ""
     echo -e "${CYAN}Usage:${NC}"
     echo "  claude-notify notification  # Notify when input needed"
@@ -344,22 +417,31 @@ main() {
     echo "  claude-notify --test        # Send test notification"
 }
 
-# Handle uninstall
-if [[ "${1:-}" == "--uninstall" ]]; then
-    echo "Uninstalling claude-notify..."
-
-    rm -f "$INSTALL_DIR/claude-notify"
-    rm -rf "$CONFIG_DIR"
-
-    if [[ -f "$CLAUDE_SETTINGS" ]]; then
-        # Remove hooks from settings
-        local new_settings
-        new_settings=$(jq 'del(.hooks)' "$CLAUDE_SETTINGS")
-        echo "$new_settings" > "$CLAUDE_SETTINGS"
-    fi
-
-    print_success "Uninstalled successfully"
-    exit 0
-fi
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --local)
+            LOCAL_MODE=true
+            shift
+            ;;
+        --hooks-only)
+            HOOKS_ONLY=true
+            shift
+            ;;
+        --uninstall)
+            do_uninstall
+            exit 0
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
 
 main
