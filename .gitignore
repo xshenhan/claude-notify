@@ -1,0 +1,17 @@
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test-config
+*.test
+
+# Local config (contains secrets)
+config.local
